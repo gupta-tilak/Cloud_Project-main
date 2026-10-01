@@ -1,0 +1,10 @@
+scenario,accident,n,B1_alert_rate,B2_alert_rate,P1_alert_rate,P2_alert_rate
+normal,false,500,0,0,0,0
+pothole,false,500,0.512,0.512,0.206,0.05
+speed_breaker,false,500,0.284,0.284,0,0
+hard_brake,false,500,0,0,0,0
+sharp_turn,false,500,0,0,0,0
+device_knock,false,500,0.902,0.902,0.158,0.158
+minor_collision,true,500,0.69,0.69,0.964,0.93
+severe_crash,true,500,1,1,1,1
+rollover,true,500,0.57,1,1,1

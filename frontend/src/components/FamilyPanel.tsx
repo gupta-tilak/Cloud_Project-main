@@ -1,0 +1,208 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { toast } from 'sonner';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Badge } from '@/components/ui/badge';
+import { useSocket } from '@/hooks/useSocket';
+import { API_URL } from '@/lib/config';
+import { beep } from '@/lib/sound';
+import { ACTIVE, upsertIncident, type Hospital, type Incident } from '@/lib/types';
+import { VehicleMap } from '@/components/VehicleMap';
+import { VehicleList } from '@/components/VehicleList';
+import { IncidentCard } from '@/components/IncidentCard';
+
+interface VehicleData {
+  vehicleId: string;
+  lat?: number;
+  lng?: number;
+  speed?: number;
+  ts?: number;
+  status: 'accepted' | 'pending';
+}
+
+const TRAIL_POINTS = 600;
+
+export function FamilyPanel({ userId, mapHeight = 'h-[420px]', showList = true }: { userId: string; mapHeight?: string; showList?: boolean }) {
+  const { socket, connected } = useSocket({ id: userId, role: 'user' });
+  const [vehicles, setVehicles] = useState<VehicleData[]>([]);
+  const [trails, setTrails] = useState<Record<string, [number, number][]>>({});
+  const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [hospitals, setHospitals] = useState<Hospital[]>([]);
+  const [newVehicleId, setNewVehicleId] = useState('');
+  const [follow, setFollow] = useState<[number, number] | null>(null);
+  const seen = useRef<Record<string, number>>({});
+  // first arrival of the cloud's decision (confirmed / dismissed) per incident
+  const delivery = useRef<Record<string, { receivedAt: number; tFanout: number }>>({});
+
+  // ---- initial state from the cloud ----
+  useEffect(() => {
+    fetch(`${API_URL}/api/user/${userId}/permissions`)
+      .then((res) => res.json())
+      .then((data) => {
+        setVehicles([
+          ...(data.accepted || []).map((vehicleId: string) => ({ vehicleId, status: 'accepted' as const })),
+          ...(data.pending || []).map((vehicleId: string) => ({ vehicleId, status: 'pending' as const })),
+        ]);
+        // movement trail from stored history (last 15 min)
+        for (const vid of data.accepted || []) {
+          fetch(`${API_URL}/api/history/${vid}?from=${Date.now() - 15 * 60_000}&limit=${TRAIL_POINTS}`)
+            .then((r) => r.json())
+            .then((h) => {
+              if (!h.ok || !h.data.length) return;
+              setTrails((t) => ({ ...t, [vid]: h.data.map((p: any) => [p.lat, p.lng]) }));
+              const last = h.data[h.data.length - 1];
+              setVehicles((prev) => prev.map((v) => (v.vehicleId === vid ? { ...v, ...last, status: 'accepted' } : v)));
+            });
+        }
+      })
+      .catch(() => toast.error(`Cannot reach cloud backend at ${API_URL}`));
+    fetch(`${API_URL}/api/hospitals`).then((r) => r.json()).then(setHospitals).catch(() => {});
+    fetch(`${API_URL}/api/incidents?userId=${userId}`).then((r) => r.json()).then(setIncidents).catch(() => {});
+  }, [userId]);
+
+  // ---- live events ----
+  useEffect(() => {
+    if (!socket) return;
+    const onLive = (data: VehicleData) => {
+      setVehicles((prev) => {
+        const idx = prev.findIndex((v) => v.vehicleId === data.vehicleId);
+        if (idx >= 0) {
+          const copy = prev.slice();
+          copy[idx] = { ...copy[idx], ...data, status: 'accepted' };
+          return copy;
+        }
+        return [...prev, { ...data, status: 'accepted' }];
+      });
+      setTrails((t) => ({ ...t, [data.vehicleId]: [...(t[data.vehicleId] || []), [data.lat!, data.lng!]].slice(-TRAIL_POINTS) as [number, number][] }));
+    };
+    const onGranted = ({ vehicleId }: { vehicleId: string }) => {
+      toast.success(`Access granted for vehicle ${vehicleId}`);
+      setVehicles((prev) => prev.map((v) => (v.vehicleId === vehicleId ? { ...v, status: 'accepted' } : v)));
+    };
+    const onDenied = ({ vehicleId }: { vehicleId: string }) => {
+      toast.error(`Vehicle ${vehicleId} denied your request`);
+      setVehicles((prev) => prev.filter((v) => v.vehicleId !== vehicleId));
+    };
+    const onIncident = (inc: Incident) => {
+      const key = `${inc.id}:${inc.status}`;
+      if (['confirmed', 'dismissed', 'cancelled'].includes(inc.status) && !delivery.current[inc.id])
+        delivery.current[inc.id] = { receivedAt: Date.now(), tFanout: inc.timing.tFanout! };
+      if (!seen.current[key]) {
+        seen.current[key] = Date.now();
+        if (inc.status === 'confirmed') {
+          beep('alarm');
+          toast.error(`🚨 Accident: vehicle ${inc.vehicleId} — ${inc.hospital?.name} notified`, { duration: 8000 });
+          setFollow([inc.location.lat, inc.location.lng]);
+        } else if (inc.status === 'verifying') toast.warning(`Possible accident on ${inc.vehicleId} — cloud verifying`);
+        else if (inc.status === 'dismissed' || inc.status === 'cancelled') toast.success(`${inc.vehicleId}: false alarm dismissed`);
+        else if (inc.status === 'dispatched') toast.info(`🚑 Ambulance dispatched to ${inc.vehicleId}`);
+      }
+      setIncidents((list) => {
+        const prev = list.find((x) => x.id === inc.id);
+        const last = inc.messages?.[inc.messages.length - 1];
+        if (last && last.role !== 'user' && (prev?.messages?.length || 0) < inc.messages!.length) {
+          beep('info');
+          toast.info(`💬 ${last.from}: ${last.text}`);
+        }
+        return upsertIncident(list, inc);
+      });
+    };
+    socket.on('location:live', onLive);
+    socket.on('permission:granted', onGranted);
+    socket.on('permission:denied', onDenied);
+    socket.on('incident:update', onIncident);
+    return () => {
+      socket.off('location:live', onLive);
+      socket.off('permission:granted', onGranted);
+      socket.off('permission:denied', onDenied);
+      socket.off('incident:update', onIncident);
+    };
+  }, [socket]);
+
+  const requestAccess = (vehicleId: string) =>
+    socket?.emit('location:request', { vehicleId }, (response: any) => {
+      if (!response?.ok) return toast.error(response?.error || 'Failed to request access');
+      toast.success('Access request sent');
+      setVehicles((prev) => (prev.some((v) => v.vehicleId === vehicleId) ? prev : [...prev, { vehicleId, status: 'pending' }]));
+    });
+
+  const active = incidents.filter((i) => ACTIVE.includes(i.status));
+  const alertVehicles = new Set(active.filter((i) => i.status !== 'verifying').map((i) => i.vehicleId));
+  const mapVehicles = useMemo(
+    () =>
+      vehicles
+        .filter((v) => v.status === 'accepted' && v.lat != null && v.lng != null)
+        .map((v) => ({ vehicleId: v.vehicleId, lat: v.lat!, lng: v.lng!, speed: v.speed, ts: v.ts, alert: alertVehicles.has(v.vehicleId) })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [vehicles, active.length]
+  );
+  const assigned = new Set(active.map((i) => i.hospital?.id).filter(Boolean));
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 text-sm">
+        <Badge variant="outline" className={connected ? 'border-accent text-accent' : ''}>
+          {connected ? '● Connected to cloud' : '○ Not connected'}
+        </Badge>
+        <span className="text-muted-foreground">Signed in as {userId}</span>
+      </div>
+
+      {active.map((inc) => (
+        <div key={inc.id} className={inc.status === 'verifying' ? '' : 'ring-2 ring-destructive rounded-lg'}>
+          <IncidentCard
+            inc={inc}
+            delivery={delivery.current[inc.id]}
+            role="user"
+            onSend={(text) => socket?.emit('incident:message', { incidentId: inc.id, text })}
+          />
+        </div>
+      ))}
+
+      <div className={`${mapHeight} rounded-lg border border-border overflow-hidden relative z-0`}>
+        <VehicleMap
+          vehicles={mapVehicles}
+          trails={trails}
+          hospitals={hospitals.map((h) => ({ ...h, highlight: assigned.has(h.id) }))}
+          incidents={incidents.filter((i) => ACTIVE.includes(i.status)).map((i) => ({ id: i.id, lat: i.location.lat, lng: i.location.lng, status: i.status }))}
+          ambulances={active.filter((i) => i.status === 'dispatched' && i.ambulance).map((i) => ({ id: i.id, ...i.ambulance! }))}
+          follow={follow}
+        />
+      </div>
+
+      {showList && (
+        <div className="space-y-2">
+          <div className="flex gap-2">
+            <Input
+              placeholder="Vehicle ID to follow (e.g. V1)"
+              value={newVehicleId}
+              onChange={(e) => setNewVehicleId(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && newVehicleId.trim() && (requestAccess(newVehicleId.trim()), setNewVehicleId(''))}
+            />
+            <Button disabled={!newVehicleId.trim()} onClick={() => (requestAccess(newVehicleId.trim()), setNewVehicleId(''))}>
+              Ask to follow
+            </Button>
+          </div>
+          <VehicleList
+            vehicles={vehicles}
+            onSelectVehicle={(id) => {
+              const v = vehicles.find((x) => x.vehicleId === id);
+              if (v?.lat != null) setFollow([v.lat, v.lng!]);
+            }}
+            onRequestAccess={requestAccess}
+          />
+        </div>
+      )}
+
+      {incidents.some((i) => !ACTIVE.includes(i.status)) && (
+        <details className="text-sm">
+          <summary className="cursor-pointer text-muted-foreground">Past incidents ({incidents.filter((i) => !ACTIVE.includes(i.status)).length})</summary>
+          <div className="mt-2 space-y-2">
+            {incidents.filter((i) => !ACTIVE.includes(i.status)).map((i) => (
+              <IncidentCard key={i.id} inc={i} compact />
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
