@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { SiteHeader } from '@/components/SiteHeader';
 import { VehiclePanel } from '@/components/VehiclePanel';
 import { FamilyPanel } from '@/components/FamilyPanel';
-import { HospitalPanel } from '@/components/HospitalPanel';
+import { ResponderPanel } from '@/components/ResponderPanel';
 import { API_URL } from '@/lib/config';
 
 const VEHICLE = 'V1';
@@ -12,11 +12,11 @@ const FAMILY = 'family1';
 
 const STEPS = [
   ['Start trip', 'The vehicle sends its GPS to the cloud every second; the family map follows it.'],
-  ['Pothole / device knock', 'The paper\u2019s 4 g rule would raise a false alarm; our crash score says \u201cnot an accident\u201d.'],
-  ['Severe crash', 'Score \u2265 65 \u2192 cloud alerts the family and the fastest hospital instantly.'],
-  ['Minor collision', 'Score 40\u201364 \u2192 cloud watches the GPS for 10 s; still stopped \u2192 accident. Try \u201cI\u2019m OK\u201d.'],
-  ['Dispatch + chat', 'Hospital dispatches the ambulance and messages the family through the cloud.'],
-  ['Network off \u2192 crash \u2192 on', 'The vehicle saves the alert while offline and sends it first when the network returns.'],
+  ['Collision / Fall-off / Rollover', 'The phone fuses its sensors into 5 features and Naive Bayes names the accident type (paper\u2019s method).'],
+  ['STOP window', 'The cloud runs a 15 s STOP window. High severity pre-alerts responders at once. Try pressing STOP.'],
+  ['Phone knocked while parked', 'Looks like a crash to the phone; it is unsure, so the cloud ensemble re-checks with context and dismisses it.'],
+  ['Type-aware dispatch', 'Rollover \u2192 ambulance + fire (extrication) + police + tow. Dispatch units from the control room.'],
+  ['Network off \u2192 crash \u2192 on', 'The phone saves the event while offline and sends it first when the network returns.'],
 ];
 
 const LiveDemo = () => {
@@ -53,14 +53,14 @@ const LiveDemo = () => {
 
         {ready && (
           <div className="grid gap-4 xl:grid-cols-3">
-            <Column title={`🚗 Vehicle ${VEHICLE}`} subtitle="In-car unit: detects crashes">
+            <Column title={`🚗 Vehicle ${VEHICLE}`} subtitle="Phone in the car: detects and classifies accidents">
               <VehiclePanel vehicleId={VEHICLE} compact />
             </Column>
             <Column title={`👪 Family member ${FAMILY}`} subtitle="Allowed by the vehicle to follow it">
               <FamilyPanel userId={FAMILY} mapHeight="h-[380px]" showList={false} />
             </Column>
-            <Column title="🏥 Emergency control room" subtitle="Gets confirmed accidents from the cloud">
-              <HospitalPanel hospitalId="ALL" mapHeight="h-[320px]" />
+            <Column title="🚨 Emergency control room" subtitle="Sees every responder the cloud assigns">
+              <ResponderPanel facilityId="ALL" mapHeight="h-[320px]" />
             </Column>
           </div>
         )}

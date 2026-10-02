@@ -1,0 +1,5 @@
+scheme,accuracy,macro_f1,false_alarms,missed,wrong_type,far
+Table II thresholds,0.86,0.7869,21,48,1,0.06
+Paper: Naive Bayes on the phone,0.9,0.8895,47,1,2,0.1343
+Cloud-only ensemble (every event uploaded),0.99,0.9794,2,0,3,0.0057
+CE-ADC: edge NB + confidence-gated cloud check,0.992,0.9844,2,0,2,0.0057

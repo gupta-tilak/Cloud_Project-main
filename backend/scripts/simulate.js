@@ -1,13 +1,14 @@
-// Runs the ECAD evaluation headless and writes CSV files for the report.
-//   node scripts/simulate.js [perScenario] [noise] [seed]
+// Runs the CE-ADC evaluation headless and writes CSV files for the report.
+//   node scripts/simulate.js [runsPerClass] [runsPerScenario] [seed]
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import {
-  runDetectionSim, runLatencySim, capacityCurve, bandwidthPerVehicle, SCHEMES, PARAMS,
-} from "../../shared/ecad.js";
+  CLASSES, CLASS_LABEL, MODEL_LABEL, SCHEMES, ARCHS, PARAMS,
+  buildDataset, trainModels, paperReplication, kFold, gmmSweep, eventSim, tauSweep, latencySim, bandwidthModel, capacityCurve,
+} from "../../shared/adc.js";
 
-const [perScenario = 500, noise = 1, seed = 42] = process.argv.slice(2).map(Number);
+const [runsPerClass = 30, runsPerScenario = 50, seed = 7] = process.argv.slice(2).map(Number);
 const outDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "results");
 fs.mkdirSync(outDir, { recursive: true });
 const csv = (name, rows) => {
@@ -17,19 +18,39 @@ const csv = (name, rows) => {
   console.log("wrote", path.join("results", name));
 };
 
-const det = runDetectionSim({ perScenario, noise, seed });
-csv("detection_metrics.csv", det.results.map(({ id, label, tp, fp, tn, fn, precision, recall, f1, far, accuracy }) =>
-  ({ id, label, tp, fp, tn, fn, precision, recall, f1, false_alarm_rate: far, accuracy })));
-csv("detection_per_scenario.csv", Object.entries(det.perType).map(([id, v]) => ({
-  scenario: id, accident: v.accident, n: v.n, ...Object.fromEntries(SCHEMES.map((s) => [s.id + "_alert_rate", v[s.id] / v.n])),
-})));
-const lat = runLatencySim({ seed });
-csv("latency.csv", Object.entries(lat).map(([id, v]) => ({ id, label: v.label, mean_s: v.mean, p50_s: v.p50, p95_s: v.p95, ...v.stages })));
-csv("capacity.csv", capacityCurve());
-const bw = bandwidthPerVehicle();
-csv("bandwidth.csv", Object.entries(bw).map(([arch, bps]) => ({ arch, bytes_per_s: bps, mb_per_day: (bps * 86400) / 1e6 })));
+// 1. Paper replication (Tables III–V): 90/10 random split of all observations
+const ds = buildDataset({ runsPerClass, seed });
+const rep = paperReplication(ds);
+csv("paper_replication.csv", Object.entries(rep.results).flatMap(([m, r]) =>
+  r.rows.map((x) => ({ model: MODEL_LABEL[m], class: CLASS_LABEL[x.cls], TP: x.TP, FP: x.FP, FN: x.FN, TN: x.TN, precision: x.precision, recall: x.recall, f1: x.f1, auc: r.roc[CLASSES.indexOf(x.cls)].auc }))));
 
-console.log(`\nN=${det.total} events, noise=${noise}, seed=${seed}, tau=[${PARAMS.tauLow}, ${PARAMS.tauHigh}]`);
-console.table(det.results.map((r) => ({ scheme: r.label, P: r.precision.toFixed(3), R: r.recall.toFixed(3), F1: r.f1.toFixed(3), FAR: r.far.toFixed(3) })));
-console.log("ECAD alerts via verify tier:", (det.alertsViaVerify * 100).toFixed(1) + "%");
-console.table(Object.values(lat).map((v) => ({ arch: v.label, mean: v.mean.toFixed(2), p95: v.p95.toFixed(2) })));
+// 2. Validation protocol: random vs run-grouped 10-fold
+const kr = kFold(ds, { grouped: false }), kg = kFold(ds, { grouped: true });
+csv("kfold.csv", ["nb", "gmm", "dt"].map((m) => ({
+  model: MODEL_LABEL[m], random_f1_mean: kr[m].f1.mean, random_f1_sd: kr[m].f1.sd, grouped_f1_mean: kg[m].f1.mean, grouped_f1_sd: kg[m].f1.sd,
+})));
+csv("gmm_components.csv", gmmSweep(ds));
+
+// 3. Event-level comparison on fresh runs (whole pipeline)
+const m5 = trainModels(ds.X5, ds.y), m6 = trainModels(ds.X6, ds.y);
+const ev = eventSim({ models5: m5, models6: m6, runsPerScenario, seed: seed + 100 });
+csv("event_level.csv", SCHEMES.map((s) => {
+  const r = ev.schemes[s.id];
+  return { scheme: s.label, accuracy: r.accuracy, macro_f1: r.macro.f1, false_alarms: r.falseAlarms, missed: r.missed, wrong_type: r.wrongType, far: r.far };
+}));
+csv("event_per_scenario.csv", Object.entries(ev.perScen).map(([id, p]) => ({
+  scenario: id, n: p.n, escalated: p.escalated, ...Object.fromEntries(SCHEMES.map((s) => [s.id + "_correct", p.correct[s.id] / p.n])),
+})));
+csv("gate_tau_sweep.csv", tauSweep(ev.records));
+
+// 4. Cloud metrics: latency, bandwidth, capacity
+const lat = latencySim({ escalationRate: ev.escalationRate, highShare: ev.highShare });
+csv("latency.csv", ARCHS.map((a) => ({ arch: a.label, first_notify_mean_s: lat[a.id].first.mean, first_notify_p95_s: lat[a.id].first.p95, confirmed_mean_s: lat[a.id].confirmed.mean, ...lat[a.id].stages })));
+csv("bandwidth.csv", bandwidthModel().map(({ label, bytesPerSec, mbPerDay }) => ({ arch: label, bytes_per_s: bytesPerSec, mb_per_day: mbPerDay })));
+csv("capacity.csv", capacityCurve());
+
+console.log(`\n${ds.y.length} observations from ${ds.runs} runs; event test: ${ev.n} runs; gate tau=${PARAMS.tau}`);
+console.table(Object.entries(rep.results).map(([m, r]) => ({ model: MODEL_LABEL[m], P: r.macro.precision.toFixed(3), R: r.macro.recall.toFixed(3), F1: r.macro.f1.toFixed(3), groupedCV_F1: kg[m].f1.mean.toFixed(3) })));
+console.table(SCHEMES.map((s) => ({ scheme: s.short, acc: ev.schemes[s.id].accuracy.toFixed(3), F1: ev.schemes[s.id].macro.f1.toFixed(3), falseAlarms: ev.schemes[s.id].falseAlarms, missed: ev.schemes[s.id].missed })));
+console.log(`escalated to cloud: ${(ev.escalationRate * 100).toFixed(1)}% of triggered events`);
+console.table(ARCHS.map((a) => ({ arch: a.id, firstNotify: lat[a.id].first.mean.toFixed(1), confirmed: lat[a.id].confirmed.mean.toFixed(1) })));

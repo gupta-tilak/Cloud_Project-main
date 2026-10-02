@@ -32,8 +32,8 @@ const COLOR: Record<string, string> = {
 const ICON: Record<string, string> = {
   location: '📍', alert: '🚨', decision: '🧠', message: '💬', permission: '🔑', storage: '💾', join: '🟢', leave: '⚪', push: '📤',
 };
-const ROLE_ICON: Record<string, string> = { device: '🚗', user: '👪', hospital: '🏥' };
-const ROLE_NAME: Record<string, string> = { device: 'Vehicle', user: 'Family', hospital: 'Hospital' };
+const ROLE_ICON: Record<string, string> = { device: '🚗', user: '👪', responder: '🚨' };
+const ROLE_NAME: Record<string, string> = { device: 'Vehicle', user: 'Family', responder: 'Responder' };
 
 const CloudMonitor = () => {
   const monitorId = useMemo(() => `screen-${Math.random().toString(36).slice(2, 7)}`, []);
@@ -88,7 +88,7 @@ const CloudMonitor = () => {
     return () => cancelAnimationFrame(raf);
   }, [pulses]);
 
-  // ---- layout: vehicles on the left, family on the top right, hospitals bottom right ----
+  // ---- layout: vehicles on the left, family on the top right, responders bottom right ----
   const nodes = useMemo(() => {
     // one box per identity; it may be open on several screens (phone + laptop)
     const uniq = new Map<string, Client & { count: number; where: string[] }>();
@@ -104,19 +104,18 @@ const CloudMonitor = () => {
     return [
       ...place(list.filter((c) => c.role === 'device'), 120, 70, 400),
       ...place(list.filter((c) => c.role === 'user'), W - 130, 50, 200),
-      ...place(list.filter((c) => c.role === 'hospital'), W - 130, 290, 420),
+      ...place(list.filter((c) => c.role === 'responder'), W - 130, 260, 440),
     ];
   }, [stats]);
 
   const posOf = (node: string): { x: number; y: number }[] => {
     if (node === 'cloud') return [CLOUD];
     if (node === 'storage') return [STORAGE];
-    if (node === 'hospital:*') return nodes.filter((n) => n.role === 'hospital');
     return nodes.filter((n) => n.node === node);
   };
 
   const url = joinUrl(info);
-  const active = ['verifying', 'confirmed', 'dispatched', 'arrived'].reduce((a, k) => a + (stats?.incidents[k] || 0), 0);
+  const active = ['countdown', 'confirmed', 'responding', 'on-scene'].reduce((a, k) => a + (stats?.incidents[k] || 0), 0);
   const byRole = (r: string) => (stats?.clients || []).filter((c) => c.role === r).length;
   const shown = showLocation ? [...events, ...locLog].sort((a, b) => b.ts - a.ts).slice(0, 150) : events;
 
@@ -154,7 +153,7 @@ const CloudMonitor = () => {
 
         {/* Stat tiles */}
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-6">
-          <Tile label="Devices connected" value={String(nodes.length)} sub={`🚗 ${byRole('device')} · 👪 ${byRole('user')} · 🏥 ${byRole('hospital')}`} />
+          <Tile label="Devices connected" value={String(nodes.length)} sub={`🚗 ${byRole('device')} · 👪 ${byRole('user')} · 🚨 ${byRole('responder')}`} />
           <Tile label="Messages in / sec" value={String(rates.in)} sub={`${stats?.traffic.in ?? 0} total from devices`} />
           <Tile label="Pushes out / sec" value={String(rates.out)} sub={`${stats?.traffic.out ?? 0} total to devices`} />
           <Tile label="Storage writes / sec" value={String(rates.writes)} sub={`${stats?.io.writes ?? 0} objects written`} />
@@ -212,7 +211,7 @@ const CloudMonitor = () => {
               ))}
               {nodes.length === 0 && (
                 <text x={W / 2} y={70} textAnchor="middle" fontSize={14} fill="hsl(var(--muted-foreground))">
-                  No devices yet — scan the QR code and join as a vehicle, family member or hospital
+                  No devices yet — scan the QR code and join as a vehicle, family member or responder
                 </text>
               )}
 
@@ -282,7 +281,6 @@ function label(node: string) {
   if (node === 'cloud') return '☁️ cloud';
   if (node === 'subscribers') return '📤 subscribers';
   if (node === 'storage') return '💾 storage';
-  if (node === 'hospital:*') return '🏥 all hospitals';
   const [role, id] = node.split(':');
   return `${ROLE_ICON[role] || ''} ${id === 'ALL' ? 'control room' : id}`;
 }

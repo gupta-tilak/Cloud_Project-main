@@ -1,5 +1,4 @@
-id,label,mean_s,p50_s,p95_s,detect,gpsFix,uplink,cloud,deliver,hold
-paper,Paper: MCU + GPS fix + GSM SMS,4.8319,4.8406,5.867,0.2978,3.029,0,0,1.5051,0
-cloudOnly,Cloud-only: raw IMU streamed,3.5164,3.5122,3.7701,0.7521,0,0.0994,0.0397,0.1252,2.5
-ecad,ECAD immediate tier (s ≥ τ_high),2.7454,2.7478,2.8254,0.006,0,0.0989,0.0126,0.128,2.5
-ecadVerify,ECAD verify tier (τ_low ≤ s < τ_high),10.2454,10.2441,10.3328,0.0061,0,0.1009,0.0127,0.1259,10
+arch,first_notify_mean_s,first_notify_p95_s,confirmed_mean_s,observe,STOP countdown,uplink,cloud,push
+Base paper: phone NB → 25 s STOP → Firebase → FCM,29.3318,29.9145,29.3318,3,25,0.1788,0.2495,0.9035
+Cloud-only: stream raw sensors, classify in cloud,13.0696,29.2849,28.9071,3,9.1625,0.3003,0.0502,0.0598
+CE-ADC: edge NB + gated cloud check + pre-alert,12.247,28.3367,28.247,3,9,0.176,0.0105,0.0605

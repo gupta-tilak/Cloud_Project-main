@@ -1,0 +1,4 @@
+model,random_f1_mean,random_f1_sd,grouped_f1_mean,grouped_f1_sd
+Naive Bayes,0.9656,0.0117,0.9395,0.0705
+Gaussian mixture,0.9639,0.0123,0.9436,0.0704
+Decision tree,0.9955,0.0069,0.9207,0.0833

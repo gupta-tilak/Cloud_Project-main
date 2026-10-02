@@ -6,7 +6,8 @@ import { Badge } from '@/components/ui/badge';
 import { useSocket } from '@/hooks/useSocket';
 import { API_URL } from '@/lib/config';
 import { beep } from '@/lib/sound';
-import { ACTIVE, upsertIncident, type Hospital, type Incident } from '@/lib/types';
+import { ACTIVE, engagedFacilities, unitsOf, upsertIncident, type Facility, type Incident } from '@/lib/types';
+import { CLASS_LABEL } from '@shared/adc.js';
 import { VehicleMap } from '@/components/VehicleMap';
 import { VehicleList } from '@/components/VehicleList';
 import { IncidentCard } from '@/components/IncidentCard';
@@ -27,7 +28,7 @@ export function FamilyPanel({ userId, mapHeight = 'h-[420px]', showList = true }
   const [vehicles, setVehicles] = useState<VehicleData[]>([]);
   const [trails, setTrails] = useState<Record<string, [number, number][]>>({});
   const [incidents, setIncidents] = useState<Incident[]>([]);
-  const [hospitals, setHospitals] = useState<Hospital[]>([]);
+  const [facilities, setFacilities] = useState<Facility[]>([]);
   const [newVehicleId, setNewVehicleId] = useState('');
   const [follow, setFollow] = useState<[number, number] | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -58,7 +59,7 @@ export function FamilyPanel({ userId, mapHeight = 'h-[420px]', showList = true }
         }
       })
       .catch(() => toast.error(`Cannot reach cloud backend at ${API_URL}`));
-    fetch(`${API_URL}/api/hospitals`).then((r) => r.json()).then(setHospitals).catch(() => {});
+    fetch(`${API_URL}/api/facilities`).then((r) => r.json()).then(setFacilities).catch(() => {});
     fetch(`${API_URL}/api/incidents?userId=${userId}`).then((r) => r.json()).then(setIncidents).catch(() => {});
   }, [userId]);
 
@@ -92,17 +93,21 @@ export function FamilyPanel({ userId, mapHeight = 'h-[420px]', showList = true }
     };
     const onIncident = (inc: Incident) => {
       const key = `${inc.id}:${inc.status}`;
-      if (['confirmed', 'dismissed', 'cancelled'].includes(inc.status) && !delivery.current[inc.id])
+      if (['countdown', 'confirmed', 'cancelled'].includes(inc.status) && !delivery.current[inc.id])
         delivery.current[inc.id] = { receivedAt: Date.now(), tFanout: inc.timing.tFanout! };
       if (!seen.current[key]) {
         seen.current[key] = Date.now();
+        const what = `${CLASS_LABEL[inc.cls]}${inc.severity ? ` (${inc.severity.level})` : ''}`;
         if (inc.status === 'confirmed') {
           beep('alarm');
-          toast.error(`🚨 Accident: vehicle ${inc.vehicleId} — ${inc.hospital?.name} notified`, { duration: 8000 });
+          toast.error(`🚨 ${what}: vehicle ${inc.vehicleId} — responders alerted`, { duration: 8000 });
           setFollow([inc.location.lat, inc.location.lng]);
-        } else if (inc.status === 'verifying') toast.warning(`Possible accident on ${inc.vehicleId} — cloud verifying`);
-        else if (inc.status === 'dismissed' || inc.status === 'cancelled') toast.success(`${inc.vehicleId}: false alarm dismissed`);
-        else if (inc.status === 'dispatched') toast.info(`🚑 Ambulance dispatched to ${inc.vehicleId}`);
+        } else if (inc.status === 'countdown') {
+          beep('alarm');
+          toast.warning(`Possible ${what.toLowerCase()} on ${inc.vehicleId} — waiting for the driver's STOP window`);
+          setFollow([inc.location.lat, inc.location.lng]);
+        } else if (inc.status === 'cancelled') toast.success(`${inc.vehicleId}: driver pressed STOP — they are OK`);
+        else if (inc.status === 'responding') toast.info(`🚑 Help is on the way to ${inc.vehicleId}`);
       }
       setIncidents((list) => {
         const prev = list.find((x) => x.id === inc.id);
@@ -154,7 +159,7 @@ export function FamilyPanel({ userId, mapHeight = 'h-[420px]', showList = true }
   const pending = vehicles.filter((v) => v.status === 'pending');
 
   const active = incidents.filter((i) => ACTIVE.includes(i.status));
-  const alertVehicles = new Set(active.filter((i) => i.status !== 'verifying').map((i) => i.vehicleId));
+  const alertVehicles = new Set(active.map((i) => i.vehicleId));
   const mapVehicles = useMemo(
     () =>
       vehicles
@@ -163,7 +168,7 @@ export function FamilyPanel({ userId, mapHeight = 'h-[420px]', showList = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [vehicles, active.length]
   );
-  const assigned = new Set(active.map((i) => i.hospital?.id).filter(Boolean));
+  const assigned = engagedFacilities(active);
 
   return (
     <div className="space-y-3">
@@ -208,7 +213,7 @@ export function FamilyPanel({ userId, mapHeight = 'h-[420px]', showList = true }
       )}
 
       {active.map((inc) => (
-        <div key={inc.id} className={inc.status === 'verifying' ? '' : 'ring-2 ring-destructive rounded-lg'}>
+        <div key={inc.id} className={inc.status === 'countdown' ? 'ring-2 ring-warning rounded-lg' : 'ring-2 ring-destructive rounded-lg'}>
           <IncidentCard
             inc={inc}
             delivery={delivery.current[inc.id]}
@@ -222,9 +227,9 @@ export function FamilyPanel({ userId, mapHeight = 'h-[420px]', showList = true }
         <VehicleMap
           vehicles={mapVehicles}
           trails={trails}
-          hospitals={hospitals.map((h) => ({ ...h, highlight: assigned.has(h.id) }))}
+          facilities={facilities.map((f) => ({ ...f, highlight: assigned.has(f.id) }))}
           incidents={incidents.filter((i) => ACTIVE.includes(i.status)).map((i) => ({ id: i.id, lat: i.location.lat, lng: i.location.lng, status: i.status }))}
-          ambulances={active.filter((i) => i.status === 'dispatched' && i.ambulance).map((i) => ({ id: i.id, ...i.ambulance! }))}
+          units={unitsOf(active)}
           follow={follow}
         />
       </div>

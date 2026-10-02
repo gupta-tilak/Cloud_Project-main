@@ -1,53 +1,68 @@
 import { useEffect, useState } from 'react';
 import {
-  Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Slider } from '@/components/ui/slider';
 import { SiteHeader } from '@/components/SiteHeader';
 import {
-  PARAMS, SCHEMES, SCENARIOS, LATENCY_STAGES, runDetectionSim, runLatencySim, capacityCurve, bandwidthPerVehicle,
-} from '@shared/ecad.js';
+  PARAMS, CLASSES, CLASS_LABEL, MODEL_LABEL, SCHEMES, SCENARIOS, ARCHS, ARCHS_NOTE, TAUS,
+  buildDataset, paperReplication, kFold, gmmSweep, trainModels, eventSim, tauSweep, latencySim, bandwidthModel, capacityCurve, dtRules,
+} from '@shared/adc.js';
 
 // Categorical slots in fixed order (validated reference palette)
 const SLOT = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300'];
 const AXIS = { fontSize: 11 };
-const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
+const pct = (v: number, d = 1) => `${(v * 100).toFixed(d)}%`;
+const f2 = (v: number) => v.toFixed(2);
+const MODELS = ['nb', 'gmm', 'dt'] as const;
 
-type Det = ReturnType<typeof runDetectionSim>;
-type Lat = ReturnType<typeof runLatencySim>;
-type SweepRow = { theta: number; B1_f1: number; B2_f1: number; B1_far: number; B2_far: number };
+// Values printed in the paper (Tables III–V, §VIII)
+const PAPER: Record<string, { p: number; r: number; f1: number; perClass: number[] }> = {
+  nb: { p: 0.94, r: 0.95, f1: 0.95, perClass: [0.97, 0.93, 0.96, 0.94] },
+  gmm: { p: 0.91, r: 0.92, f1: 0.91, perClass: [0.92, 0.9, 0.87, 0.94] },
+  dt: { p: 0.88, r: 0.89, f1: 0.88, perClass: [0.86, 0.89, 0.92, 0.87] },
+};
 
-const STAGE_LABEL: Record<string, string> = {
-  detect: 'Detection', gpsFix: 'GPS fix', uplink: 'Uplink', cloud: 'Cloud processing', deliver: 'Alert delivery', hold: 'Observation / verification hold',
+type Results = {
+  ds: ReturnType<typeof buildDataset>;
+  rep: ReturnType<typeof paperReplication>;
+  kr: ReturnType<typeof kFold>;
+  kg: ReturnType<typeof kFold>;
+  sweepK: ReturnType<typeof gmmSweep>;
+  ev: ReturnType<typeof eventSim>;
+  sweepTau: ReturnType<typeof tauSweep>;
+  lat: ReturnType<typeof latencySim>;
+  rules: string[];
 };
 
 const Evaluation = () => {
-  const [perScenario, setPerScenario] = useState(300);
+  const [runsPerClass, setRunsPerClass] = useState(30);
+  const [runsPerScenario, setRunsPerScenario] = useState(50);
   const [noise, setNoise] = useState(1);
-  const [tauLow, setTauLow] = useState(PARAMS.tauLow);
-  const [tauHigh, setTauHigh] = useState(PARAMS.tauHigh);
-  const [seed, setSeed] = useState(42);
+  const [tau, setTau] = useState(PARAMS.tau);
+  const [seed, setSeed] = useState(7);
   const [busy, setBusy] = useState(false);
-  const [det, setDet] = useState<Det | null>(null);
-  const [lat, setLat] = useState<Lat | null>(null);
-  const [sweep, setSweep] = useState<SweepRow[]>([]);
+  const [res, setRes] = useState<Results | null>(null);
+  const [model, setModel] = useState<(typeof MODELS)[number]>('nb');
 
   const run = () => {
     setBusy(true);
     // yield to the browser between the heavy steps
     setTimeout(() => {
-      const params = { tauLow, tauHigh };
-      setDet(runDetectionSim({ perScenario, noise, seed, params }));
-      setLat(runLatencySim({ seed }));
+      const ds = buildDataset({ runsPerClass, seed, noise });
+      const rep = paperReplication(ds);
+      const kr = kFold(ds, { grouped: false });
+      const kg = kFold(ds, { grouped: true });
+      const sweepK = gmmSweep(ds);
       setTimeout(() => {
-        const rows: SweepRow[] = [];
-        for (const theta of [2.5, 3, 3.5, 4, 4.5, 5, 6, 8]) {
-          const r = runDetectionSim({ perScenario: 120, noise, seed, params: { ...params, baselineG: theta } }).results;
-          rows.push({ theta, B1_f1: r[0].f1, B2_f1: r[1].f1, B1_far: r[0].far, B2_far: r[1].far });
-        }
-        setSweep(rows);
+        const params = { tau };
+        const m5 = trainModels(ds.X5, ds.y), m6 = trainModels(ds.X6, ds.y);
+        const ev = eventSim({ models5: m5, models6: m6, runsPerScenario, seed: seed + 100, noise, params });
+        const sweepTau = tauSweep(ev.records);
+        const lat = latencySim({ escalationRate: ev.escalationRate, highShare: ev.highShare });
+        setRes({ ds, rep, kr, kg, sweepK, ev, sweepTau, lat, rules: dtRules(rep.models.dt) });
         setBusy(false);
       }, 30);
     }, 30);
@@ -57,268 +72,430 @@ const Evaluation = () => {
   useEffect(run, []);
 
   const cap = capacityCurve();
-  const bw = bandwidthPerVehicle();
-  const at10k = cap.find((r) => r.N === 10000)!;
-  const b1 = det?.results.find((r) => r.id === 'B1');
-  const p2 = det?.results.find((r) => r.id === 'P2');
-
-  const metricRows = det
-    ? ['precision', 'recall', 'f1', 'far'].map((m) => ({
-        metric: { precision: 'Precision', recall: 'Recall', f1: 'F1-score', far: 'False-alarm rate' }[m],
-        ...Object.fromEntries(det.results.map((r) => [r.id, +(r as any)[m].toFixed(4)])),
-      }))
-    : [];
-
-  const latRows = lat
-    ? Object.entries(lat).map(([k, v]) => ({ arch: v.label, key: k, ...Object.fromEntries(LATENCY_STAGES.map((s) => [s, +v.stages[s].toFixed(3)])) }))
-    : [];
+  const bw = bandwidthModel();
+  const cap10k = cap.find((r: any) => r.N === 10000)!;
 
   return (
     <div className="min-h-screen bg-background">
       <SiteHeader />
-      <main className="mx-auto max-w-6xl space-y-6 p-4">
-        <div>
-          <h1 className="text-2xl font-bold">Simulation & performance evaluation</h1>
+      <main className="mx-auto max-w-6xl space-y-6 p-4 pb-16">
+        <div className="space-y-2">
+          <h1 className="text-2xl font-bold">Results</h1>
           <p className="text-sm text-muted-foreground">
-            Discrete-event simulation of {SCENARIOS.length} driving scenarios with synthetic 100 Hz IMU + 1 Hz GPS traces. The edge/cloud
-            algorithms executed here are the exact code the live demo runs (<code>shared/ecad.js</code>). Reproduce headless with{' '}
-            <code>node backend/scripts/simulate.js</code> (writes CSVs to <code>backend/results/</code>).
+            Every number on this page is computed live in your browser from <code>shared/adc.js</code>, the same code the vehicle and cloud run.
+            Data come from the synthetic sensor model (paper's scenarios, Figs. 7–9). The same run exports CSVs:{' '}
+            <code>node backend/scripts/simulate.js</code>.
           </p>
         </div>
 
-        {/* Controls */}
         <Card>
           <CardContent className="grid gap-4 pt-6 md:grid-cols-5">
-            <Control label={`Events / scenario: ${perScenario}`}>
-              <Slider min={100} max={1000} step={100} value={[perScenario]} onValueChange={([v]) => setPerScenario(v)} />
+            <Control label={`Training runs per class: ${runsPerClass} (≈${runsPerClass * 44} vectors)`}>
+              <Slider min={15} max={80} step={5} value={[runsPerClass]} onValueChange={([v]) => setRunsPerClass(v)} />
+            </Control>
+            <Control label={`Test runs per scenario: ${runsPerScenario}`}>
+              <Slider min={20} max={100} step={10} value={[runsPerScenario]} onValueChange={([v]) => setRunsPerScenario(v)} />
             </Control>
             <Control label={`Sensor noise ×${noise.toFixed(1)}`}>
-              <Slider min={0.5} max={3} step={0.5} value={[noise]} onValueChange={([v]) => setNoise(v)} />
+              <Slider min={0.5} max={2} step={0.1} value={[noise]} onValueChange={([v]) => setNoise(v)} />
             </Control>
-            <Control label={`τ_low = ${tauLow.toFixed(2)}`}>
-              <Slider min={0.25} max={0.6} step={0.05} value={[tauLow]} onValueChange={([v]) => setTauLow(Math.min(v, tauHigh))} />
-            </Control>
-            <Control label={`τ_high = ${tauHigh.toFixed(2)}`}>
-              <Slider min={0.45} max={0.9} step={0.05} value={[tauHigh]} onValueChange={([v]) => setTauHigh(Math.max(v, tauLow))} />
+            <Control label={`Gate threshold τ = ${tau}`}>
+              <div className="flex flex-wrap gap-1">
+                {TAUS.slice(1, 5).map((t: number) => (
+                  <Button key={t} size="sm" variant={t === tau ? 'default' : 'outline'} className="h-7 px-2 text-xs" onClick={() => setTau(t)}>{t}</Button>
+                ))}
+              </div>
             </Control>
             <div className="flex items-end gap-2">
-              <Button variant="outline" size="sm" onClick={() => setSeed(Math.floor(Math.random() * 1e6))}>Seed {seed}</Button>
-              <Button onClick={run} disabled={busy}>{busy ? 'Running…' : 'Run simulation'}</Button>
+              <Button variant="outline" size="sm" onClick={() => setSeed((s) => s + 1)}>Seed {seed}</Button>
+              <Button onClick={run} disabled={busy} className="flex-1">{busy ? 'Running…' : 'Run'}</Button>
             </div>
           </CardContent>
         </Card>
 
-        {/* Headline tiles */}
-        {det && lat && b1 && p2 && (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-            <Tile label="F1-score" value={`${p2.f1.toFixed(3)}`} sub={`paper threshold: ${b1.f1.toFixed(3)}`} />
-            <Tile label="False-alarm rate" value={pct(p2.far)} sub={`paper threshold: ${pct(b1.far)}`} />
-            <Tile label="Alert latency (immediate tier)" value={`${lat.ecad.mean.toFixed(2)} s`} sub={`paper pipeline: ${lat.paper.mean.toFixed(2)} s`} />
-            <Tile label="Uplink per vehicle" value={`${bw.ecad.toFixed(0)} B/s`} sub={`cloud-only raw IMU: ${bw.cloudOnly.toFixed(0)} B/s`} />
-            <Tile label="Cloud instances @10k vehicles" value={`${at10k.ecadInst}`} sub={`cloud-only: ${at10k.cloudOnlyInst}`} />
-          </div>
-        )}
+        {!res && <div className="p-8 text-center text-muted-foreground">Training models and simulating crashes…</div>}
 
-        {/* Detection metrics */}
-        {det && (
-          <Card>
-            <CardHeader>
-              <CardTitle>Detection accuracy — {det.total.toLocaleString()} simulated events</CardTitle>
-              <CardDescription>
-                B1 = single accelerometer threshold as in the base paper (θ = {PARAMS.baselineG} g); B2 = threshold + tilt; P1 = ECAD edge
-                score only (ablation); P2 = full ECAD with cloud verification. {pct(det.verifyShare)} of all events were sent to cloud
-                verification; {pct(det.alertsViaVerify)} of ECAD alerts went through the verify tier.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="h-72">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={metricRows} barGap={2} margin={{ left: -10 }}>
-                    <CartesianGrid stroke="hsl(var(--border))" vertical={false} />
-                    <XAxis dataKey="metric" tick={AXIS} />
-                    <YAxis domain={[0, 1]} tick={AXIS} />
-                    <Tooltip formatter={(v: number, k: string) => [v.toFixed(3), SCHEMES.find((s) => s.id === k)?.label]} />
-                    <Legend formatter={(k: string) => SCHEMES.find((s) => s.id === k)?.label} wrapperStyle={{ fontSize: 12 }} />
-                    {SCHEMES.map((s, i) => (
-                      <Bar key={s.id} dataKey={s.id} fill={SLOT[i]} radius={[4, 4, 0, 0]} maxBarSize={36} isAnimationActive={false} />
-                    ))}
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-muted-foreground">
-                    <th className="py-1">Scheme</th><th>TP</th><th>FP</th><th>TN</th><th>FN</th><th>Precision</th><th>Recall</th><th>F1</th><th>FAR</th><th>Accuracy</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {det.results.map((r) => (
-                    <tr key={r.id} className={`border-t border-border ${r.id === 'P2' ? 'font-semibold' : ''}`}>
-                      <td className="py-1">{r.label}</td><td>{r.tp}</td><td>{r.fp}</td><td>{r.tn}</td><td>{r.fn}</td>
-                      <td>{r.precision.toFixed(3)}</td><td>{r.recall.toFixed(3)}</td><td>{r.f1.toFixed(3)}</td><td>{pct(r.far)}</td><td>{r.accuracy.toFixed(3)}</td>
+        {res && (
+          <>
+            {/* Headline numbers */}
+            <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+              <Stat label="Event-level macro-F1" value={f2(res.ev.schemes.proposed.macro.f1)} sub={`CE-ADC vs ${f2(res.ev.schemes.paper.macro.f1)} paper NB`} />
+              <Stat label="False alarms" value={String(res.ev.schemes.proposed.falseAlarms)} sub={`vs ${res.ev.schemes.paper.falseAlarms} paper NB · ${res.ev.n} runs`} />
+              <Stat label="Sent to cloud for checking" value={pct(res.ev.escalationRate, 0)} sub="of triggered events (cloud-only: 100%)" />
+              <Stat label="First responder notice" value={`${res.lat.proposed.first.mean.toFixed(1)} s`} sub={`vs ${res.lat.paper.first.mean.toFixed(1)} s paper (mean)`} />
+              <Stat label="Uplink per vehicle" value={`${bw[2].bytesPerSec.toFixed(0)} B/s`} sub={`vs ${(bw[0].bytesPerSec / 1000).toFixed(1)} kB/s raw streaming`} />
+              <Stat label="vCPUs for 10k vehicles" value={String(cap10k.proposedInst)} sub={`vs ${cap10k.cloudOnlyInst} cloud-only`} />
+            </div>
+
+            {/* 1. Paper replication */}
+            <Card>
+              <CardHeader>
+                <CardTitle>1. Replicating the paper: Naive Bayes vs GMM vs decision tree</CardTitle>
+                <CardDescription>
+                  Same protocol as §VIII: {res.ds.y.length} observations from {res.ds.runs} crash runs, shuffled, 90 % train ({res.rep.nTrain}) / 10 % test (
+                  {res.rep.nTest}). Five features: speed, ALA, Δaltitude, pitch, roll.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border text-left text-muted-foreground">
+                      <th className="py-1 font-medium">Model</th>
+                      <th className="py-1 text-right font-medium">Paper P / R / F1</th>
+                      <th className="py-1 text-right font-medium">Ours, random split P / R / F1</th>
+                      <th className="py-1 text-right font-medium">Ours, run-grouped 10-fold F1</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </CardContent>
-          </Card>
-        )}
+                  </thead>
+                  <tbody>
+                    {MODELS.map((m) => {
+                      const r = res.rep.results[m];
+                      return (
+                        <tr key={m} className="border-b border-border">
+                          <td className="py-1">{MODEL_LABEL[m]}</td>
+                          <td className="py-1 text-right font-mono">{f2(PAPER[m].p)} / {f2(PAPER[m].r)} / <b>{f2(PAPER[m].f1)}</b></td>
+                          <td className="py-1 text-right font-mono">{f2(r.macro.precision)} / {f2(r.macro.recall)} / <b>{f2(r.macro.f1)}</b></td>
+                          <td className="py-1 text-right font-mono"><b>{f2(res.kg[m].f1.mean)}</b> ± {f2(res.kg[m].f1.sd)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
 
-        {/* Per scenario */}
-        {det && (
-          <Card>
-            <CardHeader>
-              <CardTitle>Alert rate per scenario</CardTitle>
-              <CardDescription>Share of events that raised an alert. Ideal: 0% for disturbances, 100% for accidents.</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-muted-foreground">
-                    <th className="py-1">Scenario</th><th>Ground truth</th>
-                    {SCHEMES.map((s) => <th key={s.id}>{s.short}</th>)}
-                  </tr>
-                </thead>
-                <tbody>
-                  {Object.entries(det.perType).map(([id, v]) => (
-                    <tr key={id} className="border-t border-border">
-                      <td className="py-1">{v.label}</td>
-                      <td className="text-muted-foreground">{v.accident ? 'accident' : 'not accident'}</td>
-                      {SCHEMES.map((s) => {
-                        const rate = v[s.id] / v.n;
-                        const wrong = v.accident ? 1 - rate : rate;
+                <div className="flex flex-wrap gap-1">
+                  {MODELS.map((m) => (
+                    <Button key={m} size="sm" variant={m === model ? 'default' : 'outline'} onClick={() => setModel(m)}>{MODEL_LABEL[m]}</Button>
+                  ))}
+                </div>
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div>
+                    <div className="mb-1 text-sm font-medium">Per-class results on the test set (like Tables III–V)</div>
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-border text-muted-foreground">
+                          {['Class', 'TP', 'FP', 'FN', 'TN', 'Precision', 'Recall', 'F1', 'Paper F1'].map((h, i) => (
+                            <th key={h} className={`py-1 font-medium ${i ? 'text-right' : 'text-left'}`}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {res.rep.results[model].rows.map((r: any, i: number) => (
+                          <tr key={r.cls} className="border-b border-border">
+                            <td className="py-1">{CLASS_LABEL[r.cls]}</td>
+                            {[r.TP, r.FP, r.FN, r.TN].map((v: number, j: number) => <td key={j} className="py-1 text-right font-mono">{v}</td>)}
+                            <td className="py-1 text-right font-mono">{f2(r.precision)}</td>
+                            <td className="py-1 text-right font-mono">{f2(r.recall)}</td>
+                            <td className="py-1 text-right font-mono font-semibold">{f2(r.f1)}</td>
+                            <td className="py-1 text-right font-mono text-muted-foreground">{f2(PAPER[model].perClass[i])}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {model === 'gmm' && (
+                      <div className="mt-3 text-xs">
+                        <div className="font-medium">Components per class (paper tried 16/32/64/128 and picked 64)</div>
+                        <div className="mt-1 flex flex-wrap gap-3 font-mono">
+                          {res.sweepK.map((k: any) => <span key={k.K}>K={k.K}: F1 {f2(k.f1)}</span>)}
+                        </div>
+                        <div className="mt-1 text-muted-foreground">We use K = {PARAMS.gmmK}: with ~260 vectors per class, more components start to memorise the training runs.</div>
+                      </div>
+                    )}
+                    {model === 'dt' && (
+                      <pre className="mt-3 overflow-x-auto rounded bg-muted p-2 text-[11px] leading-snug">{res.rules.join('\n')}</pre>
+                    )}
+                  </div>
+                  <div>
+                    <div className="mb-1 text-sm font-medium">ROC, one class vs the rest (like Figs. 12–14)</div>
+                    <div className="h-[240px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart margin={{ top: 8, right: 16, bottom: 16, left: 0 }}>
+                          <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" />
+                          <XAxis dataKey="fpr" type="number" domain={[0, 1]} tick={AXIS} label={{ value: 'False positive rate', position: 'insideBottom', offset: -8, fontSize: 11 }} />
+                          <YAxis dataKey="tpr" type="number" domain={[0, 1]} tick={AXIS} />
+                          <Tooltip formatter={(v: number) => v.toFixed(2)} contentStyle={{ fontSize: 11 }} />
+                          <Legend wrapperStyle={{ fontSize: 11 }} verticalAlign="top" />
+                          {res.rep.results[model].roc.map((r: any, i: number) => (
+                            <Line key={r.cls} data={r.curve} dataKey="tpr" name={`${CLASS_LABEL[r.cls]} (AUC ${f2(r.auc)})`} stroke={SLOT[i]} strokeWidth={2} dot={false} type="stepAfter" isAnimationActive={false} />
+                          ))}
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      We draw ROC from each model's own posterior. The paper fitted a separate logistic regression to its predictions, which is why its curves look
+                      much flatter than its F1 scores suggest.
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* 2. Validation protocol */}
+            <Card>
+              <CardHeader>
+                <CardTitle>2. A fairer test: keep each crash run in one fold</CardTitle>
+                <CardDescription>
+                  The paper shuffles single sensor readings, so readings from the same crash land in both training and test sets. Grouping by run (the
+                  k-fold the authors list as future work) gives honest, lower scores and the paper's ranking: NB ≈ GMM &gt; DT.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
+                <div className="h-[230px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={MODELS.map((m) => ({ model: MODEL_LABEL[m], random: res.kr[m].f1.mean, grouped: res.kg[m].f1.mean }))} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+                      <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
+                      <XAxis dataKey="model" tick={AXIS} />
+                      <YAxis domain={[0.8, 1]} tick={AXIS} />
+                      <Tooltip formatter={(v: number) => v.toFixed(3)} contentStyle={{ fontSize: 11 }} />
+                      <Legend wrapperStyle={{ fontSize: 11 }} />
+                      <Bar dataKey="random" name="Random 10-fold (leaky)" fill={SLOT[1]} radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                      <Bar dataKey="grouped" name="Run-grouped 10-fold" fill={SLOT[0]} radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <table className="w-full self-center text-sm">
+                  <thead>
+                    <tr className="border-b border-border text-left text-muted-foreground">
+                      <th className="py-1 font-medium">Model</th>
+                      <th className="py-1 text-right font-medium">Random</th>
+                      <th className="py-1 text-right font-medium">Grouped</th>
+                      <th className="py-1 text-right font-medium">Drop</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {MODELS.map((m) => (
+                      <tr key={m} className="border-b border-border">
+                        <td className="py-1">{MODEL_LABEL[m]}</td>
+                        <td className="py-1 text-right font-mono">{res.kr[m].f1.mean.toFixed(3)}</td>
+                        <td className="py-1 text-right font-mono">{res.kg[m].f1.mean.toFixed(3)}</td>
+                        <td className="py-1 text-right font-mono">{(res.kr[m].f1.mean - res.kg[m].f1.mean).toFixed(3)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </CardContent>
+            </Card>
+
+            {/* 3. Event level */}
+            <Card>
+              <CardHeader>
+                <CardTitle>3. Whole pipeline on fresh crashes: one decision per event</CardTitle>
+                <CardDescription>
+                  {res.ev.n} new runs ({runsPerScenario} per scenario), never seen in training. Each goes through trigger → {PARAMS.tObs} s observation →
+                  classification. CE-ADC sends only uncertain events ({pct(res.ev.escalationRate, 0)}) to the cloud ensemble.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
+                  <div className="h-[230px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={SCHEMES.map((s: any) => ({ name: s.short, f1: res.ev.schemes[s.id].macro.f1, acc: res.ev.schemes[s.id].accuracy }))} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+                        <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
+                        <XAxis dataKey="name" tick={AXIS} />
+                        <YAxis domain={[0.6, 1]} tick={AXIS} />
+                        <Tooltip formatter={(v: number) => v.toFixed(3)} contentStyle={{ fontSize: 11 }} />
+                        <Legend wrapperStyle={{ fontSize: 11 }} />
+                        <Bar dataKey="f1" name="Macro-F1" fill={SLOT[0]} radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                        <Bar dataKey="acc" name="Accuracy" fill={SLOT[2]} radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <table className="w-full self-center text-sm">
+                    <thead>
+                      <tr className="border-b border-border text-left text-muted-foreground">
+                        <th className="py-1 font-medium">Scheme</th>
+                        <th className="py-1 text-right font-medium">False alarms</th>
+                        <th className="py-1 text-right font-medium">Missed</th>
+                        <th className="py-1 text-right font-medium">Wrong type</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {SCHEMES.map((s: any) => (
+                        <tr key={s.id} className="border-b border-border">
+                          <td className="py-1">{s.label}</td>
+                          <td className="py-1 text-right font-mono">{res.ev.schemes[s.id].falseAlarms}</td>
+                          <td className="py-1 text-right font-mono">{res.ev.schemes[s.id].missed}</td>
+                          <td className="py-1 text-right font-mono">{res.ev.schemes[s.id].wrongType}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-border text-muted-foreground">
+                        <th className="py-1 text-left font-medium">Scenario (truth)</th>
+                        {SCHEMES.map((s: any) => <th key={s.id} className="py-1 text-right font-medium">{s.short}</th>)}
+                        <th className="py-1 text-right font-medium">Sent to cloud</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {SCENARIOS.map((sc: any) => {
+                        const p = res.ev.perScen[sc.id];
                         return (
-                          <td key={s.id}>
-                            <span className="inline-block min-w-[56px] rounded px-1.5 py-0.5 font-mono text-xs" style={{ background: `rgba(220,38,38,${(wrong * 0.55).toFixed(2)})` }}>
-                              {pct(rate)}
-                            </span>
-                          </td>
+                          <tr key={sc.id} className="border-b border-border">
+                            <td className="py-1">{sc.label} <span className="text-muted-foreground">({CLASS_LABEL[sc.cls]})</span></td>
+                            {SCHEMES.map((s: any) => {
+                              const r = p.correct[s.id] / p.n;
+                              return (
+                                <td key={s.id} className="py-1 text-right font-mono" style={{ background: r < 1 ? `rgba(220,38,38,${(1 - r) * 0.5})` : undefined }}>
+                                  {pct(r, 0)}
+                                </td>
+                              );
+                            })}
+                            <td className="py-1 text-right font-mono">{pct(p.escalated / p.n, 0)}</td>
+                          </tr>
                         );
                       })}
+                    </tbody>
+                  </table>
+                  <p className="mt-1 text-xs text-muted-foreground">Cells show the share of runs classified correctly; red marks mistakes.</p>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* 4. Gate sweep */}
+            <Card>
+              <CardHeader>
+                <CardTitle>4. Choosing the confidence gate τ</CardTitle>
+                <CardDescription>
+                  Higher τ sends more events to the cloud (more cloud work, more uplink) and catches more phone mistakes. τ = {PARAMS.tau} gets close to
+                  cloud-only accuracy while the cloud sees only a fraction of events.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
+                <div className="h-[230px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={res.sweepTau.map((r: any) => ({ ...r, tauLabel: String(r.tau) }))} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+                      <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" />
+                      <XAxis dataKey="tauLabel" tick={AXIS} />
+                      <YAxis domain={[0, 1]} tick={AXIS} />
+                      <Tooltip formatter={(v: number) => v.toFixed(3)} contentStyle={{ fontSize: 11 }} />
+                      <Legend wrapperStyle={{ fontSize: 11 }} />
+                      <Line dataKey="f1" name="Macro-F1" stroke={SLOT[0]} strokeWidth={2} isAnimationActive={false} />
+                      <Line dataKey="escalation" name="Share sent to cloud" stroke={SLOT[1]} strokeWidth={2} isAnimationActive={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+                <table className="w-full self-center text-sm">
+                  <thead>
+                    <tr className="border-b border-border text-left text-muted-foreground">
+                      <th className="py-1 font-medium">τ</th>
+                      <th className="py-1 text-right font-medium">Macro-F1</th>
+                      <th className="py-1 text-right font-medium">To cloud</th>
+                      <th className="py-1 text-right font-medium">False alarms</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-              <p className="mt-2 text-xs text-muted-foreground">Cell shading = share of wrong decisions for that scenario (darker = worse).</p>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Baseline sweep */}
-        {sweep.length > 0 && p2 && (
-          <Card>
-            <CardHeader>
-              <CardTitle>Is the baseline just badly tuned? Threshold sweep</CardTitle>
-              <CardDescription>F1 of the threshold baselines for every θ from 2.5 g to 8 g, against ECAD at its default setting (dashed).</CardDescription>
-            </CardHeader>
-            <CardContent className="h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={sweep} margin={{ left: -10, right: 20 }}>
-                  <CartesianGrid stroke="hsl(var(--border))" vertical={false} />
-                  <XAxis dataKey="theta" tick={AXIS} unit=" g" />
-                  <YAxis domain={[0, 1]} tick={AXIS} />
-                  <Tooltip formatter={(v: number) => v.toFixed(3)} labelFormatter={(t) => `θ = ${t} g`} />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <ReferenceLine y={p2.f1} stroke={SLOT[3]} strokeDasharray="5 4" label={{ value: `ECAD F1 ${p2.f1.toFixed(3)}`, position: 'insideBottomRight', fontSize: 11 }} />
-                  <Line dataKey="B1_f1" name="B1 · Threshold F1" stroke={SLOT[0]} strokeWidth={2} dot={{ r: 4 }} isAnimationActive={false} />
-                  <Line dataKey="B2_f1" name="B2 · Threshold + tilt F1" stroke={SLOT[1]} strokeWidth={2} dot={{ r: 4 }} isAnimationActive={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Latency */}
-        {lat && (
-          <Card>
-            <CardHeader>
-              <CardTitle>End-to-end alert latency (impact → alert delivered)</CardTitle>
-              <CardDescription>
-                Mean stage delays over 1,000 simulated alerts. The paper pipeline uses the paper's own measured table (detection &lt;0.5 s, GPS
-                fix 2–4 s, SMS 1–2 s). ECAD tracks continuously, so the cloud already holds the position (no GPS fix delay).
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="h-64">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={latRows} layout="vertical" margin={{ left: 40, right: 20 }}>
-                    <CartesianGrid stroke="hsl(var(--border))" horizontal={false} />
-                    <XAxis type="number" tick={AXIS} unit=" s" />
-                    <YAxis type="category" dataKey="arch" tick={{ fontSize: 10 }} width={190} />
-                    <Tooltip formatter={(v: number, k: string) => [`${v.toFixed(3)} s`, STAGE_LABEL[k]]} />
-                    <Legend formatter={(k: string) => STAGE_LABEL[k]} wrapperStyle={{ fontSize: 11 }} />
-                    {LATENCY_STAGES.map((s, i) => (
-                      <Bar key={s} dataKey={s} stackId="a" fill={SLOT[i]} stroke="hsl(var(--card))" strokeWidth={1} isAnimationActive={false} />
+                  </thead>
+                  <tbody>
+                    {res.sweepTau.map((r: any) => (
+                      <tr key={r.tau} className={`border-b border-border ${r.tau === PARAMS.tau ? 'font-semibold' : ''}`}>
+                        <td className="py-1 font-mono">{r.tau}</td>
+                        <td className="py-1 text-right font-mono">{r.f1.toFixed(3)}</td>
+                        <td className="py-1 text-right font-mono">{pct(r.escalation, 0)}</td>
+                        <td className="py-1 text-right font-mono">{r.falseAlarms}</td>
+                      </tr>
                     ))}
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-              <table className="w-full text-sm">
-                <thead><tr className="text-left text-muted-foreground"><th className="py-1">Architecture</th><th>Mean</th><th>Median</th><th>95th pct</th></tr></thead>
-                <tbody>
-                  {Object.values(lat).map((v) => (
-                    <tr key={v.label} className="border-t border-border"><td className="py-1">{v.label}</td><td>{v.mean.toFixed(2)} s</td><td>{v.p50.toFixed(2)} s</td><td>{v.p95.toFixed(2)} s</td></tr>
-                  ))}
-                </tbody>
-              </table>
-              <p className="text-xs text-muted-foreground">
-                Trade-off: the verify tier is slower ({PARAMS.tVerify} s window) but it only handles ambiguous events; severe crashes take the immediate tier.
-              </p>
-            </CardContent>
-          </Card>
+                  </tbody>
+                </table>
+              </CardContent>
+            </Card>
+
+            {/* 5. Latency */}
+            <Card>
+              <CardHeader>
+                <CardTitle>5. Time until responders hear about the accident</CardTitle>
+                <CardDescription>{ARCHS_NOTE} Severity High or Critical ({pct(res.ev.highShare, 0)} of detected accidents) triggers an immediate pre-alert.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="h-[200px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart layout="vertical" data={ARCHS.map((a: any) => ({ name: a.id === 'paper' ? 'Paper' : a.id === 'cloudOnly' ? 'Cloud-only' : 'CE-ADC', ...res.lat[a.id].stages }))} margin={{ top: 8, right: 16, bottom: 0, left: 16 }}>
+                      <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" horizontal={false} />
+                      <XAxis type="number" tick={AXIS} unit=" s" />
+                      <YAxis type="category" dataKey="name" tick={AXIS} width={80} />
+                      <Tooltip formatter={(v: number) => `${v.toFixed(2)} s`} contentStyle={{ fontSize: 11 }} />
+                      <Legend wrapperStyle={{ fontSize: 11 }} />
+                      {['observe', 'stream batching', 'uplink', 'cloud', 'push', 'STOP countdown'].map((k, i) => (
+                        <Bar key={k} dataKey={k} stackId="a" fill={SLOT[i]} isAnimationActive={false} />
+                      ))}
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border text-left text-muted-foreground">
+                      <th className="py-1 font-medium">Architecture</th>
+                      <th className="py-1 text-right font-medium">First notice, mean / p95</th>
+                      <th className="py-1 text-right font-medium">Confirmed alert, mean</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ARCHS.map((a: any) => (
+                      <tr key={a.id} className="border-b border-border">
+                        <td className="py-1">{a.label}</td>
+                        <td className="py-1 text-right font-mono">{res.lat[a.id].first.mean.toFixed(1)} s / {res.lat[a.id].first.p95.toFixed(1)} s</td>
+                        <td className="py-1 text-right font-mono">{res.lat[a.id].confirmed.mean.toFixed(1)} s</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </CardContent>
+            </Card>
+          </>
         )}
 
-        {/* Scalability */}
-        <div className="grid gap-4 md:grid-cols-2">
-          <Card>
-            <CardHeader>
-              <CardTitle>Cloud instances needed vs fleet size</CardTitle>
-              <CardDescription>k = ⌈λ·s̄ / ρ_max⌉ with ρ_max = 0.7 (auto-scaling rule)</CardDescription>
-            </CardHeader>
-            <CardContent className="h-64">
+        {/* 6. Bandwidth + capacity (analytic, no simulation needed) */}
+        <Card>
+          <CardHeader>
+            <CardTitle>6. Bandwidth and cloud capacity</CardTitle>
+            <CardDescription>Uplink bytes per vehicle, and vCPUs needed to keep utilisation ≤ 70 % (M/M/1 per vCPU).</CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4 lg:grid-cols-2">
+            <table className="w-full self-start text-sm">
+              <thead>
+                <tr className="border-b border-border text-left text-muted-foreground">
+                  <th className="py-1 font-medium">Architecture</th>
+                  <th className="py-1 text-right font-medium">Bytes/s</th>
+                  <th className="py-1 text-right font-medium">MB/day</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bw.map((b: any) => (
+                  <tr key={b.id} className="border-b border-border">
+                    <td className="py-1">{b.label}<div className="text-xs text-muted-foreground">{b.note}</div></td>
+                    <td className="py-1 text-right font-mono">{b.bytesPerSec < 1 ? b.bytesPerSec.toFixed(3) : b.bytesPerSec.toFixed(0)}</td>
+                    <td className="py-1 text-right font-mono">{b.mbPerDay.toFixed(b.mbPerDay < 1 ? 3 : 1)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="h-[230px]">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={cap} margin={{ left: -10, right: 20 }}>
-                  <CartesianGrid stroke="hsl(var(--border))" vertical={false} />
-                  <XAxis dataKey="N" tick={AXIS} tickFormatter={(v) => (v >= 1000 ? `${v / 1000}k` : v)} />
+                <LineChart data={cap} margin={{ top: 8, right: 16, bottom: 16, left: 0 }}>
+                  <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" />
+                  <XAxis dataKey="N" tick={AXIS} tickFormatter={(v) => (v >= 1000 ? `${v / 1000}k` : v)} label={{ value: 'Vehicles', position: 'insideBottom', offset: -8, fontSize: 11 }} />
                   <YAxis tick={AXIS} />
-                  <Tooltip labelFormatter={(n) => `${Number(n).toLocaleString()} vehicles`} />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Line dataKey="cloudOnlyInst" name="Cloud-only (raw IMU)" stroke={SLOT[1]} strokeWidth={2} dot={{ r: 4 }} isAnimationActive={false} />
-                  <Line dataKey="ecadInst" name="ECAD (edge features)" stroke={SLOT[0]} strokeWidth={2} dot={{ r: 4 }} isAnimationActive={false} />
+                  <Tooltip contentStyle={{ fontSize: 11 }} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} verticalAlign="top" />
+                  <Line dataKey="cloudOnlyInst" name="Cloud-only vCPUs" stroke={SLOT[1]} strokeWidth={2} isAnimationActive={false} />
+                  <Line dataKey="proposedInst" name="CE-ADC vCPUs" stroke={SLOT[0]} strokeWidth={2} isAnimationActive={false} />
                 </LineChart>
               </ResponsiveContainer>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle>Queueing delay per message (ms)</CardTitle>
-              <CardDescription>M/M/1 per instance: W = 1 / (μ − λ/k)</CardDescription>
-            </CardHeader>
-            <CardContent className="h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={cap} margin={{ left: -10, right: 20 }}>
-                  <CartesianGrid stroke="hsl(var(--border))" vertical={false} />
-                  <XAxis dataKey="N" tick={AXIS} tickFormatter={(v) => (v >= 1000 ? `${v / 1000}k` : v)} />
-                  <YAxis tick={AXIS} />
-                  <Tooltip formatter={(v: number) => `${v.toFixed(2)} ms`} labelFormatter={(n) => `${Number(n).toLocaleString()} vehicles`} />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Line dataKey="cloudOnlyWaitMs" name="Cloud-only (raw IMU)" stroke={SLOT[1]} strokeWidth={2} dot={{ r: 4 }} isAnimationActive={false} />
-                  <Line dataKey="ecadWaitMs" name="ECAD (edge features)" stroke={SLOT[0]} strokeWidth={2} dot={{ r: 4 }} isAnimationActive={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-        </div>
+            </div>
+          </CardContent>
+        </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle>Model assumptions (state these in the report)</CardTitle>
+            <CardTitle>Assumptions (state these in the presentation)</CardTitle>
           </CardHeader>
-          <CardContent className="text-sm text-muted-foreground space-y-1">
-            <p>• Synthetic traces: event amplitudes/durations drawn from ranges in Section “Signal model” of the Overview page; results are not from a real-crash dataset.</p>
-            <p>• Uplink: raw IMU = {PARAMS.fs} Hz × 6 channels × 4 B = {(PARAMS.fs * 24).toLocaleString()} B/s; GPS JSON message 120 B every 2 s; event message 400 B, 2 events/h.</p>
-            <p>• Service times: raw 1 s IMU batch 4 ms, GPS update 1 ms; 4G uplink 50–150 ms; push delivery 50–200 ms.</p>
-            <p>• Hard-coded edge weights and thresholds (PARAMS) were set by hand, not learned; the threshold sweep above shows the baselines cannot match ECAD at any θ.</p>
+          <CardContent>
+            <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+              <li>Sensor data are synthetic: shapes follow the paper's Figs. 7–9; noise covers GPS lag (0.3–1.5 s), barometer gusts, low-speed crashes and short falls.</li>
+              <li>Classes: {CLASSES.map((c: string) => CLASS_LABEL[c]).join(', ')}. "No accident" mixes 7 everyday events, including hard cases (emergency stop, phone knocked while parked).</li>
+              <li>Latency stage ranges are modelled: 4G uplink 50–300 ms, Firebase 100–400 ms, FCM push 0.3–1.5 s, WebSocket push 20–100 ms. Live incidents show measured values.</li>
+              <li>Capacity: 4 ms of cloud CPU per 1 s raw batch (cloud-only) vs 0.3 ms per location message (CE-ADC); events are rare and ignored.</li>
+              <li>Severity weights ({Object.values(PARAMS.sevW).join(', ')}) and the responder matrix are our design choices, not taken from the paper.</li>
+            </ul>
           </CardContent>
         </Card>
       </main>
@@ -329,18 +506,18 @@ const Evaluation = () => {
 function Control({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="space-y-2">
-      <div className="text-xs font-medium">{label}</div>
+      <div className="text-xs font-medium text-muted-foreground">{label}</div>
       {children}
     </div>
   );
 }
 
-function Tile({ label, value, sub }: { label: string; value: string; sub: string }) {
+function Stat({ label, value, sub }: { label: string; value: string; sub: string }) {
   return (
     <div className="rounded-lg border border-border bg-card p-3">
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="text-2xl font-bold">{value}</div>
-      <div className="text-xs text-muted-foreground">{sub}</div>
+      <div className="text-2xl font-bold tabular-nums">{value}</div>
+      <div className="text-[11px] text-muted-foreground">{sub}</div>
     </div>
   );
 }

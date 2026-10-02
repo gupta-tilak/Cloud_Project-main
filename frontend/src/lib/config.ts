@@ -8,7 +8,7 @@ export const API_URL =
     ? `${window.location.protocol}//${window.location.hostname}:8000` // vite dev server on :8080, backend on :8000
     : window.location.origin); // built app served by the backend itself
 
-export type Role = 'user' | 'device' | 'hospital' | 'monitor';
+export type Role = 'user' | 'device' | 'responder' | 'monitor';
 export interface Identity {
   id: string;
   role: Role;
@@ -22,7 +22,7 @@ export function makeToken({ id, role }: Identity) {
 }
 
 export const homeFor = (role: Role) =>
-  role === 'user' ? '/dashboard' : role === 'device' ? '/device' : role === 'hospital' ? '/hospital' : '/cloud';
+  role === 'user' ? '/dashboard' : role === 'device' ? '/device' : role === 'responder' ? '/responder' : '/cloud';
 
-// Crash score is computed in [0, 1]; the UI shows it as points out of 100.
-export const pts = (s: number) => Math.floor(s * 100 + 1e-9);
+// Probability → percentage text
+export const pct = (p: number, digits = 1) => `${(p * 100).toFixed(digits)}%`;

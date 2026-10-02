@@ -1,0 +1,13 @@
+model,class,TP,FP,FN,TN,precision,recall,f1,auc
+Naive Bayes,Collision,31,1,2,98,0.9688,0.9394,0.9538,0.9988
+Naive Bayes,Fall-off,31,0,0,101,1,1,1,1
+Naive Bayes,Rollover,46,0,0,86,1,1,1,1
+Naive Bayes,No accident,21,2,1,108,0.913,0.9545,0.9333,0.9983
+Gaussian mixture,Collision,30,1,3,98,0.9677,0.9091,0.9375,0.9982
+Gaussian mixture,Fall-off,31,0,0,101,1,1,1,1
+Gaussian mixture,Rollover,46,0,0,86,1,1,1,1
+Gaussian mixture,No accident,21,3,1,107,0.875,0.9545,0.913,0.9975
+Decision tree,Collision,33,0,0,99,1,1,1,1
+Decision tree,Fall-off,31,0,0,101,1,1,1,1
+Decision tree,Rollover,46,0,0,86,1,1,1,1
+Decision tree,No accident,22,0,0,110,1,1,1,1

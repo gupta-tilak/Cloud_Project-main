@@ -21,7 +21,7 @@ export function SiteHeader({ right }: { right?: React.ReactNode }) {
           <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-primary">
             <MapPin className="h-4 w-4 text-primary-foreground" />
           </span>
-          VehicleTrack Cloud <span className="text-xs font-normal text-muted-foreground">· ECAD</span>
+          CE-ADC <span className="text-xs font-normal text-muted-foreground">· accident detection &amp; classification cloud</span>
         </NavLink>
         <nav className="flex flex-wrap gap-1 text-sm">
           {LINKS.map((l) => (

@@ -1,5 +1,0 @@
-id,label,tp,fp,tn,fn,precision,recall,f1,false_alarm_rate,accuracy
-B1,B1 · Threshold (paper),1130,849,2151,370,0.571,0.7533,0.6496,0.283,0.7291
-B2,B2 · Threshold + tilt,1345,849,2151,155,0.613,0.8967,0.7282,0.283,0.7769
-P1,P1 · Edge score only,1482,182,2818,18,0.8906,0.988,0.9368,0.0607,0.9556
-P2,P2 · ECAD edge + cloud,1465,104,2896,35,0.9337,0.9767,0.9547,0.0347,0.9691

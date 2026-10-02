@@ -1,4 +1,4 @@
 arch,bytes_per_s,mb_per_day
-cloudOnly,2460,212.544
-ecad,60.2222,5.2032
-paper,60,5.184
+Cloud-only (raw sensor stream),13989,1208.6496
+Base paper (accident events only),0.0049,0.0004
+CE-ADC (1 Hz tracking + events),90.011,7.7769

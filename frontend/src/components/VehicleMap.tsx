@@ -4,9 +4,9 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 export type MapVehicle = { vehicleId: string; lat: number; lng: number; speed?: number; ts?: number; alert?: boolean };
-export type MapHospital = { id: string; name: string; lat: number; lng: number; highlight?: boolean };
+export type MapFacility = { id: string; type: string; name: string; lat: number; lng: number; highlight?: boolean };
 export type MapIncident = { id: string; lat: number; lng: number; status: string; label?: string };
-export type MapAmbulance = { id: string; lat: number; lng: number };
+export type MapUnit = { id: string; type: string; lat: number; lng: number };
 type View = { center: [number, number]; zoom: number };
 
 const pin = (emoji: string, bg: string, pulse = false) =>
@@ -23,28 +23,31 @@ const pin = (emoji: string, bg: string, pulse = false) =>
 const ICONS = {
   vehicle: pin('🚗', '#2563eb'),
   vehicleAlert: pin('🚗', '#dc2626', true),
-  hospital: pin('🏥', '#ffffff'),
-  hospitalSel: pin('🏥', '#16a34a'),
   incident: pin('⚠️', '#dc2626', true),
   incidentVerify: pin('⚠️', '#f59e0b', true),
   incidentDone: pin('✔️', '#64748b'),
-  ambulance: pin('🚑', '#ffffff'),
 };
+const FAC_EMOJI: Record<string, string> = { ems: '🏥', police: '👮', fire: '🧯', tow: '🏗️' };
+const UNIT_EMOJI: Record<string, string> = { ems: '🚑', police: '🚓', fire: '🚒', tow: '🛻' };
+const FAC_ICON = Object.fromEntries(
+  Object.entries(FAC_EMOJI).flatMap(([k, e]) => [[k, pin(e, '#ffffff')], [`${k}-sel`, pin(e, '#16a34a')]])
+);
+const UNIT_ICON = Object.fromEntries(Object.entries(UNIT_EMOJI).map(([k, e]) => [k, pin(e, '#ffffff')]));
 
 export function VehicleMap({
   vehicles = [],
-  hospitals = [],
+  facilities = [],
   incidents = [],
-  ambulances = [],
+  units = [],
   trails = {},
   view,
   onViewChange,
   follow,
 }: {
   vehicles?: MapVehicle[];
-  hospitals?: MapHospital[];
+  facilities?: MapFacility[];
   incidents?: MapIncident[];
-  ambulances?: MapAmbulance[];
+  units?: MapUnit[];
   trails?: Record<string, [number, number][]>;
   view?: View | null;
   onViewChange?: (v: View) => void;
@@ -66,17 +69,17 @@ export function VehicleMap({
         pts.length > 1 ? <Polyline key={id} positions={pts} pathOptions={{ color: '#2563eb', weight: 3, opacity: 0.6 }} /> : null
       )}
 
-      {hospitals.map((h) => (
-        <Marker key={h.id} position={[h.lat, h.lng]} icon={h.highlight ? ICONS.hospitalSel : ICONS.hospital}>
+      {facilities.map((f) => (
+        <Marker key={f.id} position={[f.lat, f.lng]} icon={FAC_ICON[f.highlight ? `${f.type}-sel` : f.type]}>
           <Popup>
-            <strong>{h.name}</strong> ({h.id})
+            <strong>{f.name}</strong> ({f.id})
           </Popup>
         </Marker>
       ))}
 
       {incidents.map((i) => {
-        const active = ['confirmed', 'dispatched', 'arrived'].includes(i.status);
-        const icon = i.status === 'verifying' ? ICONS.incidentVerify : active ? ICONS.incident : ICONS.incidentDone;
+        const active = ['confirmed', 'responding', 'on-scene'].includes(i.status);
+        const icon = i.status === 'countdown' ? ICONS.incidentVerify : active ? ICONS.incident : ICONS.incidentDone;
         return (
           <Marker key={i.id} position={[i.lat, i.lng]} icon={icon}>
             <Popup>
@@ -88,13 +91,13 @@ export function VehicleMap({
         );
       })}
       {incidents
-        .filter((i) => ['confirmed', 'dispatched'].includes(i.status))
+        .filter((i) => ['confirmed', 'responding', 'on-scene'].includes(i.status))
         .map((i) => (
           <Circle key={`c-${i.id}`} center={[i.lat, i.lng]} radius={120} pathOptions={{ color: '#dc2626', weight: 1, fillOpacity: 0.12 }} />
         ))}
 
-      {ambulances.map((a) => (
-        <Marker key={a.id} position={[a.lat, a.lng]} icon={ICONS.ambulance} />
+      {units.map((u) => (
+        <Marker key={u.id} position={[u.lat, u.lng]} icon={UNIT_ICON[u.type]} />
       ))}
 
       {vehicles.map((v) => (

@@ -8,7 +8,8 @@ import { SiteHeader } from '@/components/SiteHeader';
 import { useAuth } from '@/contexts/AuthContext';
 import { API_URL, homeFor, type Role } from '@/lib/config';
 import { unlockSound } from '@/lib/sound';
-import type { Hospital } from '@/lib/types';
+import type { Facility } from '@/lib/types';
+import { RESPONDER_TYPES } from '@shared/adc.js';
 
 export type ServerInfo = { hostname: string; publicUrl: string | null; lanIps: string[]; port: number; storage: string; region: string | null };
 
@@ -32,7 +33,7 @@ export function useServerInfo() {
 
 const Join = () => {
   const { info, error } = useServerInfo();
-  const [hospitals, setHospitals] = useState<Hospital[]>([]);
+  const [facilities, setFacilities] = useState<Facility[]>([]);
   const [vehicleId, setVehicleId] = useState('V1');
   const [userId, setUserId] = useState('family1');
   const [followId, setFollowId] = useState('V1');
@@ -41,7 +42,7 @@ const Join = () => {
   const url = joinUrl(info);
 
   useEffect(() => {
-    fetch(`${API_URL}/api/hospitals`).then((r) => r.json()).then(setHospitals).catch(() => {});
+    fetch(`${API_URL}/api/facilities`).then((r) => r.json()).then(setFacilities).catch(() => {});
   }, []);
 
   const go = (id: string, role: Role) => {
@@ -57,10 +58,11 @@ const Join = () => {
       <main className="mx-auto max-w-5xl space-y-6 p-4">
         <div className="grid items-center gap-6 md:grid-cols-[1fr_auto]">
           <div className="space-y-2">
-            <h1 className="text-3xl font-bold">Join the vehicle-safety cloud</h1>
+            <h1 className="text-3xl font-bold">Join the accident-classification cloud</h1>
             <p className="text-muted-foreground">
               Every phone or laptop in the room connects to <b>one cloud server</b>. Pick what this device should be: a vehicle, a family
-              member, or a hospital. The cloud passes locations, accident alerts and messages between them in real time.
+              member, or an emergency responder. The vehicle detects and classifies accidents (collision, fall-off, rollover); the cloud
+              verifies, rates severity and alerts the right responders.
             </p>
             {error && (
               <p className="rounded bg-destructive/10 p-2 text-sm text-destructive">
@@ -76,7 +78,7 @@ const Join = () => {
         </div>
 
         <div className="grid gap-4 md:grid-cols-2">
-          <RoleCard emoji="🚗" title="Vehicle" desc="The in-car IoT unit. Drives a route, sends GPS every second, and detects crashes.">
+          <RoleCard emoji="🚗" title="Vehicle" desc="The phone in the car (SNUSense). Sends GPS every second, fuses its sensors and classifies accidents with Naive Bayes.">
             <form onSubmit={(e) => (e.preventDefault(), go(vehicleId.toUpperCase(), 'device'))} className="flex gap-2">
               <Input value={vehicleId} onChange={(e) => setVehicleId(e.target.value)} placeholder="Vehicle ID" />
               <Button type="submit">Join as vehicle</Button>
@@ -104,13 +106,18 @@ const Join = () => {
             </form>
           </RoleCard>
 
-          <RoleCard emoji="🏥" title="Hospital / emergency" desc="Receives confirmed accidents, dispatches the ambulance, and messages the family.">
-            <div className="flex flex-wrap gap-2">
-              <Button variant="outline" onClick={() => go('ALL', 'hospital')}>Control room (all)</Button>
-              {hospitals.map((h) => (
-                <Button key={h.id} variant="ghost" size="sm" onClick={() => go(h.id, 'hospital')}>
-                  {h.name}
-                </Button>
+          <RoleCard emoji="🚨" title="Emergency responder" desc="Gets only the accidents that need it: ambulance, police, fire & rescue or tow/crane, chosen by accident type and severity.">
+            <div className="space-y-2">
+              <Button variant="outline" className="w-full" onClick={() => go('ALL', 'responder')}>Emergency control room (sees everything)</Button>
+              {Object.entries(RESPONDER_TYPES as Record<string, { label: string; icon: string }>).map(([type, t]) => (
+                <div key={type} className="flex flex-wrap items-center gap-1">
+                  <span className="w-28 text-xs text-muted-foreground">{t.icon} {t.label}</span>
+                  {facilities.filter((f) => f.type === type).map((f) => (
+                    <Button key={f.id} variant="ghost" size="sm" className="h-7" onClick={() => go(f.id, 'responder')}>
+                      {f.name}
+                    </Button>
+                  ))}
+                </div>
               ))}
             </div>
           </RoleCard>

@@ -9,7 +9,7 @@ import CloudMonitor from "./pages/CloudMonitor";
 import Overview from "./pages/Overview";
 import LiveDemo from "./pages/LiveDemo";
 import Evaluation from "./pages/Evaluation";
-import HospitalDashboard from "./pages/HospitalDashboard";
+import ResponderDashboard from "./pages/ResponderDashboard";
 import { homeFor, type Role } from "./lib/config";
 import UserDashboard from "./pages/UserDashboard";
 import DeviceDashboard from "./pages/DeviceDashboard";
@@ -43,10 +43,10 @@ const App = () => (
             <Route path="/demo" element={<LiveDemo />} />
             <Route path="/evaluation" element={<Evaluation />} />
             <Route
-              path="/hospital"
+              path="/responder"
               element={
-                <ProtectedRoute role="hospital">
-                  <HospitalDashboard />
+                <ProtectedRoute role="responder">
+                  <ResponderDashboard />
                 </ProtectedRoute>
               }
             />
