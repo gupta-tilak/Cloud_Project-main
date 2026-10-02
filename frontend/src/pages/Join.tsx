@@ -35,6 +35,7 @@ const Join = () => {
   const [hospitals, setHospitals] = useState<Hospital[]>([]);
   const [vehicleId, setVehicleId] = useState('V1');
   const [userId, setUserId] = useState('family1');
+  const [followId, setFollowId] = useState('V1');
   const { login } = useAuth();
   const navigate = useNavigate();
   const url = joinUrl(info);
@@ -76,16 +77,30 @@ const Join = () => {
 
         <div className="grid gap-4 md:grid-cols-2">
           <RoleCard emoji="🚗" title="Vehicle" desc="The in-car IoT unit. Drives a route, sends GPS every second, and detects crashes.">
-            <form onSubmit={(e) => (e.preventDefault(), go(vehicleId, 'device'))} className="flex gap-2">
+            <form onSubmit={(e) => (e.preventDefault(), go(vehicleId.toUpperCase(), 'device'))} className="flex gap-2">
               <Input value={vehicleId} onChange={(e) => setVehicleId(e.target.value)} placeholder="Vehicle ID" />
               <Button type="submit">Join as vehicle</Button>
             </form>
           </RoleCard>
 
           <RoleCard emoji="👪" title="Family member" desc="Asks the vehicle for permission, then sees it live on a map and gets crash alerts.">
-            <form onSubmit={(e) => (e.preventDefault(), go(userId, 'user'))} className="flex gap-2">
-              <Input value={userId} onChange={(e) => setUserId(e.target.value)} placeholder="Your name / ID" />
-              <Button type="submit">Join as family</Button>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                try {
+                  sessionStorage.setItem('vt_follow', followId.trim().toUpperCase());
+                } catch {
+                  /* storage unavailable */
+                }
+                go(userId, 'user');
+              }}
+              className="space-y-2"
+            >
+              <div className="flex gap-2">
+                <Input value={userId} onChange={(e) => setUserId(e.target.value)} placeholder="Your name / ID" aria-label="Your name" />
+                <Input value={followId} onChange={(e) => setFollowId(e.target.value)} placeholder="Vehicle to follow" aria-label="Vehicle to follow" className="w-32" />
+              </div>
+              <Button type="submit" className="w-full">Join and ask to follow {followId.trim().toUpperCase() || 'vehicle'}</Button>
             </form>
           </RoleCard>
 

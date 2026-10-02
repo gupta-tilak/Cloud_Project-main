@@ -30,6 +30,7 @@ export function FamilyPanel({ userId, mapHeight = 'h-[420px]', showList = true }
   const [hospitals, setHospitals] = useState<Hospital[]>([]);
   const [newVehicleId, setNewVehicleId] = useState('');
   const [follow, setFollow] = useState<[number, number] | null>(null);
+  const [loaded, setLoaded] = useState(false);
   const seen = useRef<Record<string, number>>({});
   // first arrival of the cloud's decision (confirmed / dismissed) per incident
   const delivery = useRef<Record<string, { receivedAt: number; tFanout: number }>>({});
@@ -43,6 +44,7 @@ export function FamilyPanel({ userId, mapHeight = 'h-[420px]', showList = true }
           ...(data.accepted || []).map((vehicleId: string) => ({ vehicleId, status: 'accepted' as const })),
           ...(data.pending || []).map((vehicleId: string) => ({ vehicleId, status: 'pending' as const })),
         ]);
+        setLoaded(true);
         // movement trail from stored history (last 15 min)
         for (const vid of data.accepted || []) {
           fetch(`${API_URL}/api/history/${vid}?from=${Date.now() - 15 * 60_000}&limit=${TRAIL_POINTS}`)
@@ -76,8 +78,13 @@ export function FamilyPanel({ userId, mapHeight = 'h-[420px]', showList = true }
       setTrails((t) => ({ ...t, [data.vehicleId]: [...(t[data.vehicleId] || []), [data.lat!, data.lng!]].slice(-TRAIL_POINTS) as [number, number][] }));
     };
     const onGranted = ({ vehicleId }: { vehicleId: string }) => {
-      toast.success(`Access granted for vehicle ${vehicleId}`);
-      setVehicles((prev) => prev.map((v) => (v.vehicleId === vehicleId ? { ...v, status: 'accepted' } : v)));
+      beep('info');
+      toast.success(`Vehicle ${vehicleId} allowed you — you will now get its alerts`);
+      setVehicles((prev) =>
+        prev.some((v) => v.vehicleId === vehicleId)
+          ? prev.map((v) => (v.vehicleId === vehicleId ? { ...v, status: 'accepted' } : v))
+          : [...prev, { vehicleId, status: 'accepted' }]
+      );
     };
     const onDenied = ({ vehicleId }: { vehicleId: string }) => {
       toast.error(`Vehicle ${vehicleId} denied your request`);
@@ -119,12 +126,32 @@ export function FamilyPanel({ userId, mapHeight = 'h-[420px]', showList = true }
     };
   }, [socket]);
 
-  const requestAccess = (vehicleId: string) =>
+  const requestAccess = (raw: string) => {
+    const vehicleId = raw.trim().toUpperCase();
+    if (!vehicleId) return;
     socket?.emit('location:request', { vehicleId }, (response: any) => {
       if (!response?.ok) return toast.error(response?.error || 'Failed to request access');
       toast.success('Access request sent');
       setVehicles((prev) => (prev.some((v) => v.vehicleId === vehicleId) ? prev : [...prev, { vehicleId, status: 'pending' }]));
     });
+  };
+
+  // Vehicle chosen on the Join page: ask to follow it automatically (the owner still has to tap Allow)
+  useEffect(() => {
+    if (!socket || !connected || !loaded) return;
+    let wanted: string | null = null;
+    try {
+      wanted = sessionStorage.getItem('vt_follow');
+      sessionStorage.removeItem('vt_follow');
+    } catch {
+      /* storage unavailable */
+    }
+    if (wanted && !vehicles.some((v) => v.vehicleId === wanted.toUpperCase())) requestAccess(wanted);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [socket, connected, loaded]);
+
+  const accepted = vehicles.filter((v) => v.status === 'accepted');
+  const pending = vehicles.filter((v) => v.status === 'pending');
 
   const active = incidents.filter((i) => ACTIVE.includes(i.status));
   const alertVehicles = new Set(active.filter((i) => i.status !== 'verifying').map((i) => i.vehicleId));
@@ -146,6 +173,39 @@ export function FamilyPanel({ userId, mapHeight = 'h-[420px]', showList = true }
         </Badge>
         <span className="text-muted-foreground">Signed in as {userId}</span>
       </div>
+
+      {loaded && accepted.length === 0 && (
+        <div className="space-y-2 rounded-lg border-2 border-warning bg-warning/10 p-3 text-sm">
+          {pending.length > 0 ? (
+            <div>
+              ⏳ Waiting for vehicle <b>{pending.map((v) => v.vehicleId).join(', ')}</b> to tap <b>Allow</b>. You will get its location and
+              accident alerts after that.
+            </div>
+          ) : (
+            <div>
+              ⚠️ You are not following any vehicle yet, so <b>you will not receive accident alerts</b>. Enter the vehicle ID and ask to follow
+              it — the vehicle then taps <b>Allow</b>.
+            </div>
+          )}
+          <div className="flex gap-2">
+            <Input
+              placeholder="Vehicle ID (e.g. V1)"
+              value={newVehicleId}
+              onChange={(e) => setNewVehicleId(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && newVehicleId.trim() && (requestAccess(newVehicleId), setNewVehicleId(''))}
+            />
+            <Button disabled={!newVehicleId.trim()} onClick={() => (requestAccess(newVehicleId), setNewVehicleId(''))}>
+              Ask to follow
+            </Button>
+          </div>
+        </div>
+      )}
+      {accepted.length > 0 && (
+        <div className="text-sm text-muted-foreground">
+          🔔 You get alerts for: <b className="text-foreground">{accepted.map((v) => v.vehicleId).join(', ')}</b>
+          {pending.length > 0 && <> · waiting for approval: {pending.map((v) => v.vehicleId).join(', ')}</>}
+        </div>
+      )}
 
       {active.map((inc) => (
         <div key={inc.id} className={inc.status === 'verifying' ? '' : 'ring-2 ring-destructive rounded-lg'}>
@@ -176,9 +236,9 @@ export function FamilyPanel({ userId, mapHeight = 'h-[420px]', showList = true }
               placeholder="Vehicle ID to follow (e.g. V1)"
               value={newVehicleId}
               onChange={(e) => setNewVehicleId(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && newVehicleId.trim() && (requestAccess(newVehicleId.trim()), setNewVehicleId(''))}
+              onKeyDown={(e) => e.key === 'Enter' && newVehicleId.trim() && (requestAccess(newVehicleId), setNewVehicleId(''))}
             />
-            <Button disabled={!newVehicleId.trim()} onClick={() => (requestAccess(newVehicleId.trim()), setNewVehicleId(''))}>
+            <Button disabled={!newVehicleId.trim()} onClick={() => (requestAccess(newVehicleId), setNewVehicleId(''))}>
               Ask to follow
             </Button>
           </div>

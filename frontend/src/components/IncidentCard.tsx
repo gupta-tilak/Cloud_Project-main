@@ -99,6 +99,18 @@ export function IncidentCard({
         </div>
       )}
 
+      {['confirmed', 'dispatched', 'arrived'].includes(inc.status) && (
+        <div className="text-xs">
+          {inc.notified && inc.notified.length > 0 ? (
+            <>📣 Alert sent to: 👪 {inc.notified.join(', ')} · 🏥 hospitals</>
+          ) : (
+            <span className="text-destructive">
+              📣 Alert sent to hospitals only — no family member is following {inc.vehicleId} (they must ask to follow and the vehicle must tap Allow)
+            </span>
+          )}
+        </div>
+      )}
+
       {delivery && (
         <div className="text-xs">
           ⏱ This screen got the alert <b>{sec(delivery.receivedAt - t.tDetect)}</b> after the crash.

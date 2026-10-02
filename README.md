@@ -35,7 +35,7 @@ The server prints its address, for example `Other devices: http://172.20.51.219:
 ## Demo script (about 5 minutes)
 
 1. **Projector: Cloud Monitor.** "This is our cloud server. Everyone scan the QR code." Devices appear on the diagram as they join.
-2. **Family phone: ask to follow `V1`.** The request travels phone → cloud → vehicle, and the vehicle taps **Allow** (orange dots on the monitor). Only allowed people get this car's data.
+2. **Family phone: Join** (the "vehicle to follow" box is pre-filled with `V1`). The request travels phone → cloud → vehicle, and the vehicle taps **Allow** (orange dots on the monitor). Only allowed people get this car's alerts. **If the vehicle doesn't tap Allow, the family gets no alerts**; the family screen shows a yellow warning until it does.
 3. **Vehicle: Start trip.** A GPS update every second (blue dots): the vehicle → cloud → storage → family map.
 4. **Vehicle: Big pothole.** The paper's 4 g rule would call it a crash. Our crash score explains in points why it isn't one. Nothing is sent, or the cloud double-checks and dismisses it because the car drove on.
 5. **Vehicle: Severe crash.** Score ≥ 65 → the cloud picks the fastest hospital and pushes the alert (red dots). The family phone and hospital laptop beep within ~2.5 s.

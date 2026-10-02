@@ -585,6 +585,16 @@ async function loadIncidents() {
   }
 }
 
+server.on("error", (e) => {
+  if (e.code === "EADDRINUSE") {
+    console.error(`❌ Port ${PORT} is already in use — the server is probably already running in another terminal.`);
+    console.error(`   Stop it (Ctrl+C there), or find it with:  lsof -i :${PORT}   then  kill <PID>`);
+    console.error(`   Or use another port:  PORT=8001 npm start`);
+    process.exit(1);
+  }
+  throw e;
+});
+
 loadIncidents().finally(() =>
   server.listen(PORT, "0.0.0.0", () => {
     const ips = Object.values(os.networkInterfaces()).flat().filter((n) => n && n.family === "IPv4" && !n.internal).map((n) => n.address);
